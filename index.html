@@ -39,13 +39,18 @@
   .hide{display:none}
   /* modo app: a obra/painel carregado aqui dentro, ocupando a tela toda (sem a faixa do Google) */
   html.app,html.app body{height:100%;overflow:hidden;background:#fff}
-  #app{position:fixed;inset:0;width:100%;height:100%;border:0;display:block;background:#fff}
+  iframe.app{position:fixed;inset:0;width:100%;height:100%;border:0;display:block;background:#fff}
+  /* barrinha de carregamento no topo enquanto a próxima tela carrega */
+  #barra{position:fixed;top:0;left:0;height:3px;width:0;background:var(--orange);z-index:10;opacity:0;transition:opacity .2s}
+  #barra.on{opacity:1;animation:br 2.2s ease-out forwards}
+  @keyframes br{0%{width:0}60%{width:70%}100%{width:92%}}
   .splash{z-index:5;transition:opacity .25s}
   .splash.sai{opacity:0;pointer-events:none}
 </style>
 </head>
 <body>
 <!-- 1) aberto pelo atalho: vai direto para o app -->
+<div id="barra"></div>
 <div class="splash hide" id="splash"><img src="icone-192.png" alt="VAS"><div class="spin"></div><div id="spTxt">Abrindo…</div></div>
 
 <!-- 2) aberto pelo link do painel: explica como criar o atalho -->
@@ -90,29 +95,64 @@
   var destino = id ? 'https://script.google.com/macros/s/' + id + '/exec' : '';
 
   if(id && q.get('auto') === '1'){
-    // aberto pelo atalho da tela inicial
-    document.getElementById('splash').classList.remove('hide');
-    document.getElementById('spTxt').textContent = 'Abrindo ' + (nome || 'a obra') + '…';
-    // repassa ao app os outros parâmetros do link (ex.: painel=...)
-    var extra = new URLSearchParams(location.search);
-    ['app', 'n', 'auto'].forEach(function(k){ extra.delete(k); });
-    extra.set('lanc', location.origin + location.pathname);   // o app usa para o botão ⌂ voltar por aqui
-    var src = destino + '?' + extra.toString();
+    // ===== modo app: esta página fica aberta e só troca a obra/painel dentro dela =====
+    var LANC = location.origin + location.pathname;
+    var sp = document.getElementById('splash'), barra = document.getElementById('barra');
+    var atual = null, novo = null, timer = null;
     document.documentElement.classList.add('app');
-    var f = document.createElement('iframe');
-    f.id = 'app';
-    f.title = nome || 'VAS';
-    f.setAttribute('allow', 'fullscreen; camera; geolocation; clipboard-write');
-    f.setAttribute('allowfullscreen', '');
-    var sp = document.getElementById('splash');
-    function pronto(){ if(sp.classList.contains('sai')) return; sp.classList.add('sai'); setTimeout(function(){ sp.classList.add('hide'); }, 300); }
-    // o app avisa assim que desenha a tela (mais rápido que esperar tudo carregar)
-    window.addEventListener('message', function(ev){ if(ev.data === 'vas-pronto' && /googleusercontent\.com$|google\.com$/.test(new URL(ev.origin).hostname)) pronto(); });
-    f.addEventListener('load', pronto);
-    // se não carregar em 25 s, oferece abrir direto no Google
-    setTimeout(function(){ if(!sp.classList.contains('sai')){ document.getElementById('spTxt').innerHTML = 'Demorando… <a style="color:#fff" href="' + src + '">abrir direto</a>'; } }, 25000);
-    f.src = src;
-    document.body.appendChild(f);
+    document.getElementById('spTxt').textContent = 'Abrindo ' + (nome || 'a obra') + '…';
+    sp.classList.remove('hide');
+
+    function extraDe(qs){ var e = new URLSearchParams(qs); ['app', 'n', 'auto', 'lanc'].forEach(function(k){ e.delete(k); }); return e; }
+    function urlDe(st){ var e = new URLSearchParams(); e.set('app', st.app); if(st.n) e.set('n', st.n); e.set('auto', '1'); var x = extraDe(st.q || ''); x.forEach(function(v, k){ e.set(k, v); }); return LANC + '?' + e.toString(); }
+    function srcDe(st){ var x = extraDe(st.q || ''); x.set('lanc', LANC); return 'https://script.google.com/macros/s/' + st.app + '/exec?' + x.toString(); }
+
+    function mostrar(){
+      // troca a tela antiga pela nova (que já carregou por baixo)
+      if(!novo) return;
+      clearTimeout(timer);
+      novo.style.visibility = 'visible'; novo.style.zIndex = '2';
+      if(atual && atual !== novo){ var velho = atual; setTimeout(function(){ if(velho.parentNode) velho.parentNode.removeChild(velho); }, 50); }
+      atual = novo; novo = null;
+      barra.classList.remove('on');
+      if(!sp.classList.contains('sai')){ sp.classList.add('sai'); setTimeout(function(){ sp.classList.add('hide'); }, 300); }
+    }
+    function abrir(st){
+      document.title = st.n || 'VAS';
+      if(novo && novo.parentNode) novo.parentNode.removeChild(novo);
+      var f = document.createElement('iframe');
+      f.className = 'app'; f.title = st.n || 'VAS';
+      f.setAttribute('allow', 'fullscreen; camera; geolocation; clipboard-write');
+      f.setAttribute('allowfullscreen', '');
+      // a tela atual continua visível enquanto a próxima carrega por baixo
+      if(atual){ f.style.visibility = 'hidden'; f.style.zIndex = '1'; barra.classList.add('on'); }
+      f.addEventListener('load', function(){ if(novo === f) mostrar(); });
+      f.src = srcDe(st);
+      novo = f;
+      document.body.appendChild(f);
+      // nunca deixa a pessoa esperando sem ver nada: no máximo 2,5 s
+      clearTimeout(timer); timer = setTimeout(mostrar, 2500);
+    }
+    var st0 = { app: id, n: nome, q: location.search };
+    try { history.replaceState(st0, '', urlDe(st0)); } catch(e){}
+    abrir(st0);
+
+    var okApp = function(v){ return /^[A-Za-z0-9_-]{20,}$/.test(String(v || '')); };
+    var okPainel = function(v){ return !v || /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(String(v)); };
+    window.addEventListener('message', function(ev){
+      var d = ev.data;
+      // o app avisa assim que desenha a tela
+      if(d === 'vas-pronto'){ if(novo) mostrar(); return; }
+      // o app pede para abrir outra obra/painel aqui dentro (sem recarregar esta página)
+      if(d && d.vas === 'abrir' && okApp(d.app) && okPainel(d.painel)){
+        try { ev.source.postMessage('vas-ok', '*'); } catch(e){}
+        var st = { app: d.app, n: String(d.n || '').slice(0, 40), q: d.painel ? '?painel=' + encodeURIComponent(d.painel) : '' };
+        try { history.pushState(st, '', urlDe(st)); } catch(e){}
+        abrir(st);
+      }
+    });
+    // botão voltar do celular: volta para a tela anterior
+    window.addEventListener('popstate', function(ev){ var st = ev.state; if(st && okApp(st.app)) abrir(st); });
     return;
   }
   if(id){
