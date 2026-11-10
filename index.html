@@ -92,7 +92,8 @@
     // repassa ao app os outros parâmetros do link (ex.: painel=...)
     var extra = new URLSearchParams(location.search);
     ['app', 'n', 'auto'].forEach(function(k){ extra.delete(k); });
-    var src = destino + (extra.toString() ? '?' + extra.toString() : '');
+    extra.set('lanc', location.origin + location.pathname);   // o app usa para o botão ⌂ voltar por aqui
+    var src = destino + '?' + extra.toString();
     document.documentElement.classList.add('app');
     var f = document.createElement('iframe');
     f.id = 'app';
@@ -100,7 +101,10 @@
     f.setAttribute('allow', 'fullscreen; camera; geolocation; clipboard-write');
     f.setAttribute('allowfullscreen', '');
     var sp = document.getElementById('splash');
-    f.addEventListener('load', function(){ sp.classList.add('sai'); setTimeout(function(){ sp.classList.add('hide'); }, 300); });
+    function pronto(){ if(sp.classList.contains('sai')) return; sp.classList.add('sai'); setTimeout(function(){ sp.classList.add('hide'); }, 300); }
+    // o app avisa assim que desenha a tela (mais rápido que esperar tudo carregar)
+    window.addEventListener('message', function(ev){ if(ev.data === 'vas-pronto' && /googleusercontent\.com$|google\.com$/.test(new URL(ev.origin).hostname)) pronto(); });
+    f.addEventListener('load', pronto);
     // se não carregar em 25 s, oferece abrir direto no Google
     setTimeout(function(){ if(!sp.classList.contains('sai')){ document.getElementById('spTxt').innerHTML = 'Demorando… <a style="color:#fff" href="' + src + '">abrir direto</a>'; } }, 25000);
     f.src = src;
